@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+*.keystore
+.ks_pass
+.key_pass
+.idea/
+*.iml
+.DS_Store
+.cxx
+.externalNativeBuild
+.stitch-previews/
