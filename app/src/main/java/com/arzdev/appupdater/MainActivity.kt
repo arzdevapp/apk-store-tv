@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -94,6 +95,13 @@ class MainActivity : Activity() {
                 1f
             ).apply { topMargin = 20 }
             divider = null
+            // Let the row backgrounds (bg_row_selector) drive the highlight;
+            // hide the framework's default selector overlay so nothing double-draws.
+            selector = ColorDrawable(0x00000000)
+            // TV remote: rows (not the list) own focus; keep list unfocusable itself.
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
         adapter = LibraryAdapter()
         listView.adapter = adapter
@@ -197,6 +205,12 @@ class MainActivity : Activity() {
                         items.addAll(newItems)
                         adapter.notifyDataSetChanged()
                         statusLine.text = "${items.size} apps in library"
+                        // Give the first row visible focus so the DPAD highlight
+                        // is obvious from launch (TV-friendly).
+                        if (listView.count > 0) {
+                            listView.setSelection(0)
+                            listView.requestFocus()
+                        }
                     }
                 } catch (e: Exception) {
                     mainHandler.post {
@@ -230,16 +244,20 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(28, 24, 28, 24)
-                setBackgroundResource(if (pos % 2 == 0) R.drawable.bg_row else R.drawable.bg_row_alt)
+                // Native focus/selected selector — visible on TV DPAD focus.
+                setBackgroundResource(R.drawable.bg_row_selector)
                 isFocusable = true
+                isFocusableInTouchMode = true
                 isClickable = true
-                // DPAD focus highlight
-                setOnFocusChangeListener { _, hasFocus ->
-                    setBackgroundResource(
-                        if (hasFocus) R.drawable.bg_row_focused
-                        else if (pos % 2 == 0) R.drawable.bg_row else R.drawable.bg_row_alt
-                    )
-                }
+                // Block TextView children from stealing focus from the row,
+                // so DPAD moves between whole rows (a single clear target).
+                descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                isSelected = false
+            }
+            // Listen to ListView selection so the selector's selected state
+            // tracks the DPAD-highlighted item even on short focus flicks.
+            row.setOnFocusChangeListener { _, hasFocus ->
+                row.isSelected = hasFocus || listView.checkedItemPosition == pos
             }
 
             val left = LinearLayout(this@MainActivity).apply {
@@ -251,6 +269,8 @@ class MainActivity : Activity() {
                 textSize = 24f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(0xFFFFFFFF.toInt())
+                isClickable = false
+                isFocusable = false
             }
             val metaTV = TextView(this@MainActivity).apply {
                 text = buildString {
@@ -260,11 +280,15 @@ class MainActivity : Activity() {
                 }
                 textSize = 16f
                 setTextColor(0xFF9AA7B4.toInt())
+                isClickable = false
+                isFocusable = false
             }
             val installedTV = TextView(this@MainActivity).apply {
                 text = item.installedVersion ?: ""
                 textSize = 15f
                 setTextColor(0xFF6F7C89.toInt())
+                isClickable = false
+                isFocusable = false
             }
             left.addView(nameTV)
             left.addView(metaTV)
@@ -279,6 +303,8 @@ class MainActivity : Activity() {
                 setPadding(24, 12, 24, 12)
                 setBackgroundColor(statusBadgeColor(item.state))
                 gravity = Gravity.CENTER
+                isClickable = false
+                isFocusable = false
             }
             row.addView(badge, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT

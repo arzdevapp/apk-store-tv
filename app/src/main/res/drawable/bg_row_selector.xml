@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Row background with a visible focus/selected state for TV remote DPAD.
+     state_focused fires when the row has DPAD focus; state_selected adds a
+     persistent highlight for the currently-active item. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#0E2A24" />
+            <corners android:radius="12dp" />
+            <stroke android:width="3dp" android:color="#00C9A7" />
+        </shape>
+    </item>
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#0E241F" />
+            <corners android:radius="12dp" />
+            <stroke android:width="2dp" android:color="#008B75" />
+        </shape>
+    </item>
+    <item>
+        <!-- default (unfocused) -->
+        <shape android:shape="rectangle">
+            <solid android:color="#141A22" />
+            <corners android:radius="12dp" />
+            <stroke android:width="1dp" android:color="#232B35" />
+        </shape>
+    </item>
+</selector>
