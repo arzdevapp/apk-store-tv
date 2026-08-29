@@ -210,7 +210,8 @@ class MainActivity : Activity() {
                         // highlight is obvious from launch (TV-friendly).
                         if (listView.count > 0) {
                             listView.post {
-                                (listView.getChildAt(0)?.getChildAt(listView.getChildAt(0).childCount - 1) as? Button)?.requestFocus()
+                                val firstRow = listView.getChildAt(0) as? ViewGroup
+                                (firstRow?.getChildAt(firstRow.childCount - 1) as? Button)?.requestFocus()
                             }
                         }
                     }
