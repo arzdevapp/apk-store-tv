@@ -95,10 +95,11 @@ class MainActivity : Activity() {
                 1f
             ).apply { topMargin = 20 }
             divider = null
-            // Let the row backgrounds (bg_row_selector) drive the highlight;
+            // Let the per-row buttons (bg_row_selector) drive the highlight;
             // hide the framework's default selector overlay so nothing double-draws.
             selector = ColorDrawable(0x00000000)
-            // TV remote: rows (not the list) own focus; keep list unfocusable itself.
+            // TV remote: buttons inside rows own focus; keep the list unfocusable itself
+            // so DPAD moves cleanly between row buttons.
             isFocusable = false
             isFocusableInTouchMode = false
             descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -117,20 +118,20 @@ class MainActivity : Activity() {
         ).apply { topMargin = 16 })
 
         setContentView(root)
+    }
 
-        listView.setOnItemClickListener { _, _, position, _ ->
-            val item = items[position]
-            if (installing) return@setOnItemClickListener
-            when {
-                !Installer.canRequestUnknownSources(this) -> {
-                    statusLine.text = "Please allow App Updater to install apps from this source."
-                    Installer.requestUnknownSources(this)
-                }
-                item.state == ItemState.CURRENT && item.installedVersion != null -> {
-                    statusLine.text = "${item.info.label} is already the latest version (${item.installedVersion})."
-                }
-                else -> startInstall(item.info)
+    // Shared install decision — called from each row's INSTALL/UPDATE button.
+    private fun onAppChosen(item: LibraryItem) {
+        if (installing) return
+        when {
+            !Installer.canRequestUnknownSources(this) -> {
+                statusLine.text = "Please allow App Updater to install apps from this source."
+                Installer.requestUnknownSources(this)
             }
+            item.state == ItemState.CURRENT && item.installedVersion != null -> {
+                statusLine.text = "${item.info.label} is already the latest version."
+            }
+            else -> startInstall(item.info)
         }
     }
 
@@ -205,11 +206,12 @@ class MainActivity : Activity() {
                         items.addAll(newItems)
                         adapter.notifyDataSetChanged()
                         statusLine.text = "${items.size} apps in library"
-                        // Give the first row visible focus so the DPAD highlight
-                        // is obvious from launch (TV-friendly).
+                        // Give the first row's button visible focus so the DPAD
+                        // highlight is obvious from launch (TV-friendly).
                         if (listView.count > 0) {
-                            listView.setSelection(0)
-                            listView.requestFocus()
+                            listView.post {
+                                (listView.getChildAt(0)?.getChildAt(listView.getChildAt(0).childCount - 1) as? Button)?.requestFocus()
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -227,12 +229,6 @@ class MainActivity : Activity() {
         ItemState.CURRENT -> "OK"
     }
 
-    private fun statusBadgeColor(state: ItemState): Int = when (state) {
-        ItemState.INSTALL -> 0xFF00C9A7.toInt()
-        ItemState.UPDATE -> 0xFFFFB300.toInt()
-        ItemState.CURRENT -> 0xFF5A6774.toInt()
-    }
-
     private inner class LibraryAdapter : BaseAdapter() {
         override fun getCount() = items.size
         override fun getItem(pos: Int) = items[pos]
@@ -244,20 +240,9 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(28, 24, 28, 24)
-                // Native focus/selected selector — visible on TV DPAD focus.
-                setBackgroundResource(R.drawable.bg_row_selector)
-                isFocusable = true
-                isFocusableInTouchMode = true
-                isClickable = true
-                // Block TextView children from stealing focus from the row,
-                // so DPAD moves between whole rows (a single clear target).
-                descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                isSelected = false
-            }
-            // Listen to ListView selection so the selector's selected state
-            // tracks the DPAD-highlighted item even on short focus flicks.
-            row.setOnFocusChangeListener { _, hasFocus ->
-                row.isSelected = hasFocus || listView.checkedItemPosition == pos
+                // Passive container — the Button owns focus so DPAD has one clear target.
+                setBackgroundColor(0xFF141A22.toInt())
+                dividerPadding = 24
             }
 
             val left = LinearLayout(this@MainActivity).apply {
@@ -295,18 +280,22 @@ class MainActivity : Activity() {
             left.addView(installedTV)
             row.addView(left)
 
-            val badge = TextView(this@MainActivity).apply {
+            // Real focusable Button — the clear DPAD target. Triggered with OK/Select.
+            val btn = Button(this@MainActivity).apply {
                 text = statusBadgeText(item.state)
                 textSize = 20f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(0xFFFFFFFF.toInt())
-                setPadding(24, 12, 24, 12)
-                setBackgroundColor(statusBadgeColor(item.state))
+                setPadding(32, 16, 32, 16)
+                setBackgroundResource(R.drawable.bg_row_selector)
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isClickable = true
                 gravity = Gravity.CENTER
-                isClickable = false
-                isFocusable = false
+                minWidth = 220
             }
-            row.addView(badge, LinearLayout.LayoutParams(
+            btn.setOnClickListener { onAppChosen(item) }
+            row.addView(btn, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
 
