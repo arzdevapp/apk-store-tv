@@ -256,15 +256,16 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(28, 24, 28, 24)
                 setBackgroundResource(R.drawable.bg_row_selector)
-                isFocusable = true
-                isFocusableInTouchMode = false
-                isClickable = true
+                // v1.4.2: rows are PLAIN non-clickable, non-focusable containers.
+                // ListView owns selection AND click. On Fire OS, marking rows
+                // isClickable=true made ListView route DPAD_CENTER into its own
+                // focus/click handling and NOT call performItemClick → onItemClickListener
+                // never fired, so install couldn't start. A plain row lets the focused
+                // ListView deliver CENTER to onItemClick (the bg_row_selector still
+                // highlights via state_selected/state_focused from ListView selection).
+                isFocusable = false
+                isClickable = false
                 descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                // CRITICAL (v1.4.0): a clickable row NEEDS its own OnClickListener.
-                // On ListView, if the item view is isClickable=true but has no listener,
-                // the click (DPAD-CENTER performClick OR touch) is swallowed at the row
-                // and NEVER reaches setOnItemClickListener → install never triggers.
-                setOnClickListener { onAppChosen(item) }
             }
 
             val left = LinearLayout(this@MainActivity).apply {
