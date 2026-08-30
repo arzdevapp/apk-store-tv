@@ -1,7 +1,9 @@
 package com.arzdev.appupdater
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -88,41 +90,79 @@ object Installer {
             try { session.close() } catch (_: Exception) {}
         }
 
-        // ⚠️ Completion detection: the result normally arrives via InstallReceiver
-        // broadcast (STATUS_SUCCESS etc). On some Fire OS / TV builds that broadcast
-        // is NOT delivered, so we ALSO poll the installed version here; whichever
-        // completes first (broadcast OR poll) ends the flow and clears the "Installing"
-        // status instead of hanging forever.
-        //  - Polling runs on this bg thread (installApk is called off the main thread).
-        //  - Resets the listener's done-flag so the broadcast path also works.
-        val doneFlag = InstallerListenerHolder.newCompletion()
+        // ⚠️ Completion detection — made box-independent (v1.4.3+):
+        // Some Fire OS / Android TV builds never deliver the PackageInstaller result
+        // broadcast, AND the version-poll's getPackageInfo can keep returning a stale
+        // "not installed" for up to 90s (cache not refreshed until the PACKAGE_ADDED
+        // broadcast). The reliable signal that ALWAYS fires when a package installs is
+        // the system-wide Intent.ACTION_PACKAGE_ADDED. We register a dynamic receiver
+        // for it and use it as the primary completion signal, keeping the version-poll
+        // (which the PACKAGE_ADDED receiver refreshes) as a fallback.
+        val completion = InstallerListenerHolder.newCompletion()
         val targetVc = info.versionCode
+        val pkgName = info.packageName
+
+        val addedReceiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                val added = intent?.data?.encodedSchemeSpecificPart
+                if (pkgName != null && added != null && added.equals(pkgName, ignoreCase = true)) {
+                    // Confirmed installed — refresh package cache + report success once.
+                    refreshPackageCache(pm, pkgName, targetVc, info, listener, completion)
+                }
+            }
+        }
+        // Match any installed package (matches intent-filter data scheme "package").
+        val filter = IntentFilter(Intent.ACTION_PACKAGE_ADDED)
+        filter.addDataScheme("package")
+        try {
+            ctx.registerReceiver(addedReceiver, filter)
+        } catch (_: Exception) {
+            // register in-app receiver is fine pre-34; ignore failures on strict builds.
+        }
+
         val deadline = System.currentTimeMillis() + 90_000L
         while (System.currentTimeMillis() < deadline) {
-            // If the broadcast already delivered a result (onDone called), stop polling.
-            if (doneFlag.get()) return
-            if (info.packageName == null) {
-                // No package metadata — we can only rely on the broadcast; give it time.
+            // If PACKAGE_ADDED already delivered a result, stop polling.
+            if (completion.get()) {
+                try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+                return
+            }
+            if (pkgName == null) {
+                // No package metadata — rely on the broadcast filter (matches any pkg).
                 Thread.sleep(2000)
                 continue
             }
-            try {
-                val pi = pm.getPackageInfo(info.packageName, 0)
-                val installed = pi.longVersionCode
-                if (targetVc == null || installed >= targetVc) {
-                    if (doneFlag.compareAndSet(false, true)) {
-                        listener.onDone(true, "${info.label} installed (v${pi.versionName ?: installed})")
-                    }
-                    return
-                }
-            } catch (_: PackageManager.NameNotFoundException) {
-                // not installed yet — keep waiting
+            refreshPackageCache(pm, pkgName, targetVc, info, listener, completion)
+            if (completion.get()) {
+                try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+                return
             }
             Thread.sleep(2000)
         }
-        // Timed out without broadcast or poll-confirmation.
-        if (doneFlag.compareAndSet(false, true)) {
+        // Timed out — unregister and do a final best-effort check before erroring.
+        try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+        if (completion.compareAndSet(false, true)) {
             listener.onDone(false, "${info.label}: install not confirmed in 90s. Check the device.")
+        }
+    }
+
+    // Refresh the installed-version check once. Reports onDone(true) if the package
+    // is now installed and at least targetVc (or no known target). Claims completion
+    // once via the shared AtomicBoolean so PACKAGE_ADDED and the poll never double-fire.
+    private fun refreshPackageCache(
+        pm: PackageManager, pkgName: String, targetVc: Long?,
+        info: ApkInfo, listener: Listener, completion: java.util.concurrent.atomic.AtomicBoolean
+    ) {
+        try {
+            val pi = pm.getPackageInfo(pkgName, 0)
+            val installed = pi.longVersionCode
+            if (targetVc == null || installed >= targetVc) {
+                if (completion.compareAndSet(false, true)) {
+                    listener.onDone(true, "${info.label} installed (v${pi.versionName ?: installed})")
+                }
+            }
+        } catch (_: PackageManager.NameNotFoundException) {
+            // not installed (or cache stale) — keep waiting
         }
     }
 
