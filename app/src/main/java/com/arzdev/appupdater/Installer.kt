@@ -81,8 +81,46 @@ object Installer {
         } catch (e: Exception) {
             session.abandon()
             listener.onDone(false, "Install failed: ${e.message}")
+            return
         } finally {
             try { session.close() } catch (_: Exception) {}
+        }
+
+        // ⚠️ Completion detection: the result normally arrives via InstallReceiver
+        // broadcast (STATUS_SUCCESS etc). On some Fire OS / TV builds that broadcast
+        // is NOT delivered, so we ALSO poll the installed version here; whichever
+        // completes first (broadcast OR poll) ends the flow and clears the "Installing"
+        // status instead of hanging forever.
+        //  - Polling runs on this bg thread (installApk is called off the main thread).
+        //  - Resets the listener's done-flag so the broadcast path also works.
+        val doneFlag = InstallerListenerHolder.newCompletion()
+        val targetVc = info.versionCode
+        val deadline = System.currentTimeMillis() + 90_000L
+        while (System.currentTimeMillis() < deadline) {
+            // If the broadcast already delivered a result (onDone called), stop polling.
+            if (doneFlag.get()) return
+            if (info.packageName == null) {
+                // No package metadata — we can only rely on the broadcast; give it time.
+                Thread.sleep(2000)
+                continue
+            }
+            try {
+                val pi = pm.getPackageInfo(info.packageName, 0)
+                val installed = pi.longVersionCode
+                if (targetVc == null || installed >= targetVc) {
+                    if (doneFlag.compareAndSet(false, true)) {
+                        listener.onDone(true, "${info.label} installed (v${pi.versionName ?: installed})")
+                    }
+                    return
+                }
+            } catch (_: PackageManager.NameNotFoundException) {
+                // not installed yet — keep waiting
+            }
+            Thread.sleep(2000)
+        }
+        // Timed out without broadcast or poll-confirmation.
+        if (doneFlag.compareAndSet(false, true)) {
+            listener.onDone(false, "${info.label}: install not confirmed in 90s. Check the device.")
         }
     }
 

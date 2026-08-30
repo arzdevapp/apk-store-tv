@@ -9,16 +9,15 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.TextView
 import java.util.Locale
+import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -28,7 +27,6 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
     private var items: MutableList<LibraryItem> = mutableListOf()
     private var installing = false
-    private var focusedIndex = 0  // row the DPAD is currently on
 
     private data class LibraryItem(
         val info: ApkInfo,
@@ -55,6 +53,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 40, 48, 40)
             setBackgroundColor(0xFF0B0F14.toInt())
+            isFocusable = false
         }
 
         val header = TextView(this).apply {
@@ -62,13 +61,15 @@ class MainActivity : Activity() {
             textSize = 34f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(0xFFFFFFFF.toInt())
+            isFocusable = false
         }
         root.addView(header)
 
         val sub = TextView(this).apply {
-            text = "Browse the library and tap an app to download & install it directly on this device."
+            text = "Browse the library and select an app to download & install it directly on this device."
             textSize = 18f
             setTextColor(0xFF9AA7B4.toInt())
+            isFocusable = false
         }
         root.addView(sub)
 
@@ -76,6 +77,7 @@ class MainActivity : Activity() {
             text = "Loading library…"
             textSize = 18f
             setTextColor(0xFF00C9A7.toInt())
+            isFocusable = false
         }
         root.addView(statusLine)
 
@@ -89,6 +91,9 @@ class MainActivity : Activity() {
         }
         root.addView(progressBar)
 
+        // Canonical TV list: ListView OWNS focus so DPAD natively moves the row
+        // selection and OK/Enter fires the item click. Rows are single focus targets;
+        // the INSTALL badge is a non-focusable TextView so it never steals focus.
         listView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -96,40 +101,30 @@ class MainActivity : Activity() {
                 1f
             ).apply { topMargin = 20 }
             divider = null
-            // Let the per-row buttons (bg_row_selector) drive the highlight;
-            // hide the framework's default selector overlay so nothing double-draws.
+            // Hide the framework's default highlight; rows draw their own via the
+            // bg_row_selector (state_focused / state_selected) when selected.
             selector = ColorDrawable(0x00000000)
-            // TV remote: keep the list itself unfocusable and let row buttons own focus.
-            isFocusable = false
+            isFocusable = true
             isFocusableInTouchMode = false
-            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-            // DPAD must hop between row buttons, not scroll the list. ListView's own
-            // arrow handling scrolls instead of moving focus, so intercept arrows here.
-            setOnKeyListener { _, keyCode, event ->
-                if (event.action == KeyEvent.ACTION_DOWN) {
-                    when (keyCode) {
-                        KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_UP -> {
-                            val dir = if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) 1 else -1
-                            val target = focusedIndex + dir
-                            if (target in 0 until items.size) focusRow(target)
-                            true  // consume so the list doesn't also scroll
-                        }
-                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                            if (focusedIndex < items.size) activateRow(focusedIndex)
-                            true
-                        }
-                        else -> false
-                    }
-                } else false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            // Whole-row selection model: DPAD moves selection, OK triggers install.
+            setOnItemClickListener { _, _, position, _ ->
+                if (position in items.indices) onAppChosen(items[position])
             }
         }
         adapter = LibraryAdapter()
         listView.adapter = adapter
         root.addView(listView)
 
-        val refreshBtn = Button(this).apply {
+        val refreshBtn = TextView(this).apply {
             text = "⟳ Refresh"
             textSize = 20f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(32, 16, 32, 16)
+            setBackgroundResource(R.drawable.bg_row_selector)
+            gravity = Gravity.CENTER
+            isFocusable = true
+            isClickable = true
             setOnClickListener { refresh() }
         }
         root.addView(refreshBtn, LinearLayout.LayoutParams(
@@ -139,7 +134,8 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    // Shared install decision — called from each row's INSTALL/UPDATE button.
+    // Shared install decision — called when a row is selected (OK/Enter on remote,
+    // or touch tap). Prefers a fresh fetch of the install-source setting each time.
     private fun onAppChosen(item: LibraryItem) {
         if (installing) return
         when {
@@ -152,32 +148,6 @@ class MainActivity : Activity() {
             }
             else -> startInstall(item.info)
         }
-    }
-
-    // Move DPAD focus to a specific row's button (scrolling it into view if needed).
-    private fun focusRow(target: Int) {
-        focusedIndex = target.coerceIn(0, items.size - 1)
-        // Ensure the target row is on screen before locating its button.
-        val first = listView.firstVisiblePosition
-        val last = listView.lastVisiblePosition
-        if (focusedIndex < first || focusedIndex > last) {
-            listView.setSelectionFromTop(focusedIndex, 20)
-        }
-        listView.post {
-            for (i in 0 until listView.childCount) {
-                val row = listView.getChildAt(i) as? ViewGroup ?: continue
-                val btn = row.getChildAt(row.childCount - 1) as? Button ?: continue
-                if (btn.tag is Int && btn.tag == focusedIndex) {
-                    btn.requestFocus()
-                    return@post
-                }
-            }
-        }
-    }
-
-    // Activate the currently-focused row (CENTER/OK/ENTER on the remote).
-    private fun activateRow(pos: Int) {
-        if (pos in items.indices) onAppChosen(items[pos])
     }
 
     private fun startInstall(info: ApkInfo) {
@@ -203,7 +173,7 @@ class MainActivity : Activity() {
                     installing = false
                     statusLine.text = if (success) "✓ $message" else "$message"
                     if (success) {
-                        // user may need to approve on-screen; re-evaluate states shortly
+                        // Re-evaluate states shortly so the badge flips to OK/UPDATE.
                         mainHandler.postDelayed({ refresh() }, 3000)
                     }
                 }
@@ -218,7 +188,7 @@ class MainActivity : Activity() {
         statusLine.text = "Loading library…"
         InstallerListenerHolder.listener = null
         mainHandler.post {
-            kotlin.concurrent.thread {
+            thread(name = "appupdater-lib") {
                 try {
                     val lib = Api.fetchLibrary()
                     val pm = packageManager
@@ -251,10 +221,10 @@ class MainActivity : Activity() {
                         items.addAll(newItems)
                         adapter.notifyDataSetChanged()
                         statusLine.text = "${items.size} apps in library"
-                        // Give the first row's button visible focus so the DPAD
-                        // highlight is obvious from launch (TV-friendly).
+                        // Focus the first row so the teal highlight is visible from launch.
                         if (listView.count > 0) {
-                            focusRow(0)
+                            listView.requestFocus()
+                            listView.setSelection(0)
                         }
                     }
                 } catch (e: Exception) {
@@ -279,13 +249,17 @@ class MainActivity : Activity() {
 
         override fun getView(pos: Int, convertView: View?, parent: ViewGroup): View {
             val item = items[pos]
+            // Single focusable/clickable row = the INSTALL target. TextView children are
+            // non-focusable so the whole row is one clear DPAD target.
             val row = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(28, 24, 28, 24)
-                // Passive container — the Button owns focus so DPAD has one clear target.
-                setBackgroundColor(0xFF141A22.toInt())
-                dividerPadding = 24
+                setBackgroundResource(R.drawable.bg_row_selector)
+                isFocusable = true
+                isFocusableInTouchMode = false
+                isClickable = true
+                descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
             }
 
             val left = LinearLayout(this@MainActivity).apply {
@@ -297,7 +271,6 @@ class MainActivity : Activity() {
                 textSize = 24f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(0xFFFFFFFF.toInt())
-                isClickable = false
                 isFocusable = false
             }
             val metaTV = TextView(this@MainActivity).apply {
@@ -308,14 +281,12 @@ class MainActivity : Activity() {
                 }
                 textSize = 16f
                 setTextColor(0xFF9AA7B4.toInt())
-                isClickable = false
                 isFocusable = false
             }
             val installedTV = TextView(this@MainActivity).apply {
                 text = item.installedVersion ?: ""
                 textSize = 15f
                 setTextColor(0xFF6F7C89.toInt())
-                isClickable = false
                 isFocusable = false
             }
             left.addView(nameTV)
@@ -323,26 +294,19 @@ class MainActivity : Activity() {
             left.addView(installedTV)
             row.addView(left)
 
-            // Real focusable Button — the clear DPAD target. Triggered with OK/Select.
-            val btn = Button(this@MainActivity).apply {
+            // Non-focusable INSTALL/UPDATE/OK badge — a label, NOT a separate click target.
+            val badge = TextView(this@MainActivity).apply {
                 text = statusBadgeText(item.state)
                 textSize = 20f
                 setTypeface(typeface, Typeface.BOLD)
                 setTextColor(0xFFFFFFFF.toInt())
                 setPadding(32, 16, 32, 16)
-                setBackgroundResource(R.drawable.bg_row_selector)
-                isFocusable = true
-                isFocusableInTouchMode = true
-                isClickable = true
+                setBackgroundColor(0xFF00C9A7.toInt())
                 gravity = Gravity.CENTER
-                minWidth = 220
-                tag = pos
+                isFocusable = false
+                isClickable = false
             }
-            btn.setOnClickListener {
-                focusedIndex = pos
-                onAppChosen(item)
-            }
-            row.addView(btn, LinearLayout.LayoutParams(
+            row.addView(badge, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
 
@@ -354,4 +318,9 @@ class MainActivity : Activity() {
 // Holder for the install result listener — simple static bridge.
 object InstallerListenerHolder {
     @Volatile var listener: Installer.Listener? = null
+    // Set true once an install result has been delivered (broadcast OR poll), so the
+    // two completion paths never double-fire or contradict each other.
+    private val completion = java.util.concurrent.atomic.AtomicBoolean(false)
+    fun newCompletion(): java.util.concurrent.atomic.AtomicBoolean { completion.set(false); return completion }
+    fun markCompleted() { completion.set(true) }
 }

@@ -35,9 +35,13 @@ class InstallReceiver : BroadcastReceiver() {
         }
 
         val l = InstallerListenerHolder.listener
+        // Only report if the poll hasn't already claimed completion (avoids double-fire).
         if (l != null) {
-            l.onProgress(1f, message)
-            l.onDone(status == PackageInstaller.STATUS_SUCCESS, message)
+            val claimed = InstallerListenerHolder.newCompletion().compareAndSet(false, true)
+            if (claimed) {
+                l.onProgress(1f, message)
+                l.onDone(status == PackageInstaller.STATUS_SUCCESS, message)
+            }
         }
     }
 }
