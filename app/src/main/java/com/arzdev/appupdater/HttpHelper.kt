@@ -77,7 +77,7 @@ object HttpHelper {
         for (ip in FALLBACK_IPS) {
             try {
                 val conn = URL("https://$ip$path").openConnection() as HttpsURLConnection
-                conn.requestProperty("Host", HOST)
+                conn.setRequestProperty("Host", HOST)
                 configure(conn, viaIp = true)
                 return conn
             } catch (e: Exception) {
