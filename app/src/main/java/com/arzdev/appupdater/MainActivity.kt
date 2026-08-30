@@ -260,6 +260,11 @@ class MainActivity : Activity() {
                 isFocusableInTouchMode = false
                 isClickable = true
                 descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                // CRITICAL (v1.4.0): a clickable row NEEDS its own OnClickListener.
+                // On ListView, if the item view is isClickable=true but has no listener,
+                // the click (DPAD-CENTER performClick OR touch) is swallowed at the row
+                // and NEVER reaches setOnItemClickListener → install never triggers.
+                setOnClickListener { onAppChosen(item) }
             }
 
             val left = LinearLayout(this@MainActivity).apply {
