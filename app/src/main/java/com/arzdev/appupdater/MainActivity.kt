@@ -165,8 +165,8 @@ class MainActivity : Activity() {
         }
         listView.post {
             for (i in 0 until listView.childCount) {
-                val child = listView.getChildAt(i) ?: continue
-                val btn = child.getChildAt(child.childCount - 1) as? Button ?: continue
+                val row = listView.getChildAt(i) as? ViewGroup ?: continue
+                val btn = row.getChildAt(row.childCount - 1) as? Button ?: continue
                 if (btn.tag is Int && btn.tag == focusedIndex) {
                     btn.requestFocus()
                     return@post
