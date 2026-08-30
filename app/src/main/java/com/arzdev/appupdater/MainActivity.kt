@@ -105,24 +105,22 @@ class MainActivity : Activity() {
             descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
             // DPAD must hop between row buttons, not scroll the list. ListView's own
             // arrow handling scrolls instead of moving focus, so intercept arrows here.
-            setOnKeyListener { v, keyCode, event ->
-                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-                when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_UP -> {
-                        val target = focusedIndex + if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) 1 else -1
-                        if (target in 0 until items.size) {
-                            focusRow(target)
+            setOnKeyListener { _, keyCode, event ->
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    when (keyCode) {
+                        KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_UP -> {
+                            val dir = if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) 1 else -1
+                            val target = focusedIndex + dir
+                            if (target in 0 until items.size) focusRow(target)
+                            true  // consume so the list doesn't also scroll
                         }
-                        true  // consume so the list doesn't also scroll
-                    }
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                        if (focusedIndex < items.size) {
-                            activateRow(focusedIndex)
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                            if (focusedIndex < items.size) activateRow(focusedIndex)
+                            true
                         }
-                        true
+                        else -> false
                     }
-                    else -> false
-                }
+                } else false
             }
         }
         adapter = LibraryAdapter()
