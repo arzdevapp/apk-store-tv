@@ -26,12 +26,13 @@ object Installer {
 
     // ── Download APK to the TV's own external storage ─────────────
     private fun downloadFile(info: ApkInfo, listener: Listener, outFile: File) {
-        val conn = URL(info.url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 15000
-        conn.readTimeout = 15000
+        // Route through HttpHelper so a NetGuard DNS failure falls back to the
+        // funnel's known public IPs (with correct Host header + SNI).
+        val path = "/uploads/" + info.url.substringAfterLast('/')
+        val conn = HttpHelper.openHttps(path)
         conn.requestMethod = "GET"
         conn.setRequestProperty("X-Api-Key", Api.API_KEY)
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 AppUpdater/1.0")
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 AppUpdater/1.4")
         try {
             val code = conn.responseCode
             if (code != HttpURLConnection.HTTP_OK) {

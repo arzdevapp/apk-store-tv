@@ -32,10 +32,9 @@ object Api {
     }
 
     fun fetchLibrary(): List<ApkInfo> {
-        val url = URL("$BASE_URL/api/apks")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.connectTimeout = 15000
-        conn.readTimeout = 15000
+        // Route through HttpHelper so a NetGuard DNS failure falls back to the
+        // funnel's known public IPs (with correct Host header + SNI).
+        val conn = HttpHelper.openHttps("/api/apks")
         conn.requestMethod = "GET"
         applyAuth(conn)
 
