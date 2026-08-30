@@ -50,8 +50,11 @@ object HttpHelper {
         try {
             val san = cert.subjectAlternativeNames ?: return@HostnameVerifier false
             for (entry in san) {
-                if (entry.size >= 2 && entry[0] == 2 && HOST.equals(entry[1], ignoreCase = true)) {
-                    return@HostnameVerifier true
+                if (entry.size >= 2 && entry[0] == 2) {
+                    val sanValue = entry[1] as? String ?: continue
+                    if (HOST.equals(sanValue, ignoreCase = true)) {
+                        return@HostnameVerifier true
+                    }
                 }
             }
             false
