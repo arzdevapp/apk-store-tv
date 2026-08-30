@@ -9,11 +9,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.Button
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ProgressBar
@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
     private var items: MutableList<LibraryItem> = mutableListOf()
     private var installing = false
+    private var focusedIndex = 0  // row the DPAD is currently on
 
     private data class LibraryItem(
         val info: ApkInfo,
@@ -98,11 +99,31 @@ class MainActivity : Activity() {
             // Let the per-row buttons (bg_row_selector) drive the highlight;
             // hide the framework's default selector overlay so nothing double-draws.
             selector = ColorDrawable(0x00000000)
-            // TV remote: buttons inside rows own focus; keep the list unfocusable itself
-            // so DPAD moves cleanly between row buttons.
+            // TV remote: keep the list itself unfocusable and let row buttons own focus.
             isFocusable = false
             isFocusableInTouchMode = false
             descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            // DPAD must hop between row buttons, not scroll the list. ListView's own
+            // arrow handling scrolls instead of moving focus, so intercept arrows here.
+            setOnKeyListener { v, keyCode, event ->
+                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+                when (keyCode) {
+                    KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_UP -> {
+                        val target = focusedIndex + if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) 1 else -1
+                        if (target in 0 until items.size) {
+                            focusRow(target)
+                        }
+                        true  // consume so the list doesn't also scroll
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        if (focusedIndex < items.size) {
+                            activateRow(focusedIndex)
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
         }
         adapter = LibraryAdapter()
         listView.adapter = adapter
@@ -133,6 +154,32 @@ class MainActivity : Activity() {
             }
             else -> startInstall(item.info)
         }
+    }
+
+    // Move DPAD focus to a specific row's button (scrolling it into view if needed).
+    private fun focusRow(target: Int) {
+        focusedIndex = target.coerceIn(0, items.size - 1)
+        // Ensure the target row is on screen before locating its button.
+        val first = listView.firstVisiblePosition
+        val last = listView.lastVisiblePosition
+        if (focusedIndex < first || focusedIndex > last) {
+            listView.setSelectionFromTop(focusedIndex, 20)
+        }
+        listView.post {
+            for (i in 0 until listView.childCount) {
+                val child = listView.getChildAt(i) ?: continue
+                val btn = child.getChildAt(child.childCount - 1) as? Button ?: continue
+                if (btn.tag is Int && btn.tag == focusedIndex) {
+                    btn.requestFocus()
+                    return@post
+                }
+            }
+        }
+    }
+
+    // Activate the currently-focused row (CENTER/OK/ENTER on the remote).
+    private fun activateRow(pos: Int) {
+        if (pos in items.indices) onAppChosen(items[pos])
     }
 
     private fun startInstall(info: ApkInfo) {
@@ -209,10 +256,7 @@ class MainActivity : Activity() {
                         // Give the first row's button visible focus so the DPAD
                         // highlight is obvious from launch (TV-friendly).
                         if (listView.count > 0) {
-                            listView.post {
-                                val firstRow = listView.getChildAt(0) as? ViewGroup
-                                (firstRow?.getChildAt(firstRow.childCount - 1) as? Button)?.requestFocus()
-                            }
+                            focusRow(0)
                         }
                     }
                 } catch (e: Exception) {
@@ -294,8 +338,12 @@ class MainActivity : Activity() {
                 isClickable = true
                 gravity = Gravity.CENTER
                 minWidth = 220
+                tag = pos
             }
-            btn.setOnClickListener { onAppChosen(item) }
+            btn.setOnClickListener {
+                focusedIndex = pos
+                onAppChosen(item)
+            }
             row.addView(btn, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
