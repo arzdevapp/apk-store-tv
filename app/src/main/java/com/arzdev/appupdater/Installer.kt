@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
@@ -115,9 +116,14 @@ object Installer {
         val filter = IntentFilter(Intent.ACTION_PACKAGE_ADDED)
         filter.addDataScheme("package")
         try {
-            ctx.registerReceiver(addedReceiver, filter)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ctx.registerReceiver(addedReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                ctx.registerReceiver(addedReceiver, filter)
+            }
         } catch (_: Exception) {
-            // register in-app receiver is fine pre-34; ignore failures on strict builds.
+            // Polling below remains a fallback if receiver registration fails.
         }
 
         val deadline = System.currentTimeMillis() + 90_000L
@@ -155,7 +161,12 @@ object Installer {
     ) {
         try {
             val pi = pm.getPackageInfo(pkgName, 0)
-            val installed = pi.longVersionCode
+            val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pi.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pi.versionCode.toLong()
+            }
             if (targetVc == null || installed >= targetVc) {
                 if (completion.compareAndSet(false, true)) {
                     listener.onDone(true, "${info.label} installed (v${pi.versionName ?: installed})")

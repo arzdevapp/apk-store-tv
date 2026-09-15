@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -39,7 +40,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
-        refresh()
     }
 
     override fun onResume() {
@@ -198,7 +198,12 @@ class MainActivity : Activity() {
                         if (info.packageName != null) {
                             try {
                                 val pi = pm.getPackageInfo(info.packageName, 0)
-                                installedVersion = pi.longVersionCode
+                                installedVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                    pi.longVersionCode
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    pi.versionCode.toLong()
+                                }
                                 installedVName = pi.versionName
                             } catch (_: PackageManager.NameNotFoundException) {
                                 installedVersion = null

@@ -3,6 +3,7 @@
      state_focused fires when the row has DPAD focus; state_selected adds a
      persistent highlight for the currently-active item. -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true" android:drawable="@drawable/bg_row_focused" />
     <item android:state_focused="true">
         <shape android:shape="rectangle">
             <solid android:color="#0E2A24" />
