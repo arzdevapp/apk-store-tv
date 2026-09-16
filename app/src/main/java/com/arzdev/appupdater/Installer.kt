@@ -68,9 +68,53 @@ object Installer {
         listener.onStatus("Installing ${info.label}…")
         val pm = ctx.packageManager
         val name = ctx.packageName
+        val completion = InstallerListenerHolder.currentCompletion()
+        val targetVc = info.versionCode
+        val pkgName = info.packageName
+
+        // Register before commit so fast installs cannot publish PACKAGE_ADDED before
+        // the receiver exists. Polling remains a fallback for vendor-specific behavior.
+        val addedReceiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                val added = intent?.data?.encodedSchemeSpecificPart
+                if (pkgName != null && added != null && added.equals(pkgName, ignoreCase = true)) {
+                    refreshPackageCache(pm, pkgName, targetVc, info, listener, completion)
+                }
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_PACKAGE_ADDED).apply {
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }
+        var receiverRegistered = false
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ctx.registerReceiver(addedReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                ctx.registerReceiver(addedReceiver, filter)
+            }
+            receiverRegistered = true
+        } catch (_: Exception) {
+            // Polling below remains a fallback if receiver registration fails.
+        }
+
         val sessionParams = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-        val sessionId = pm.packageInstaller.createSession(sessionParams)
-        val session = pm.packageInstaller.openSession(sessionId)
+        val sessionId: Int
+        val session: PackageInstaller.Session
+        try {
+            sessionId = pm.packageInstaller.createSession(sessionParams)
+            InstallerListenerHolder.setActiveSession(sessionId)
+            session = pm.packageInstaller.openSession(sessionId)
+        } catch (e: Exception) {
+            if (receiverRegistered) {
+                try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+            }
+            if (completion.compareAndSet(false, true)) {
+                listener.onDone(false, "Could not create install session: ${e.message}")
+            }
+            return
+        }
         try {
             val stream = session.openWrite("pkg", 0, apkFile.length())
             apkFile.inputStream().use { input ->
@@ -82,71 +126,43 @@ object Installer {
             }
             session.fsync(stream)
             stream.close()
-            session.commit(PendingIntentFactory.create(ctx, name))
+            session.commit(PendingIntentFactory.create(ctx, name, sessionId))
         } catch (e: Exception) {
             session.abandon()
-            listener.onDone(false, "Install failed: ${e.message}")
+            if (receiverRegistered) {
+                try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+            }
+            if (completion.compareAndSet(false, true)) {
+                listener.onDone(false, "Install failed: ${e.message}")
+            }
             return
         } finally {
             try { session.close() } catch (_: Exception) {}
         }
 
-        // ⚠️ Completion detection — made box-independent (v1.4.3+):
-        // Some Fire OS / Android TV builds never deliver the PackageInstaller result
-        // broadcast, AND the version-poll's getPackageInfo can keep returning a stale
-        // "not installed" for up to 90s (cache not refreshed until the PACKAGE_ADDED
-        // broadcast). The reliable signal that ALWAYS fires when a package installs is
-        // the system-wide Intent.ACTION_PACKAGE_ADDED. We register a dynamic receiver
-        // for it and use it as the primary completion signal, keeping the version-poll
-        // (which the PACKAGE_ADDED receiver refreshes) as a fallback.
-        val completion = InstallerListenerHolder.newCompletion()
-        val targetVc = info.versionCode
-        val pkgName = info.packageName
-
-        val addedReceiver = object : BroadcastReceiver() {
-            override fun onReceive(c: Context?, intent: Intent?) {
-                val added = intent?.data?.encodedSchemeSpecificPart
-                if (pkgName != null && added != null && added.equals(pkgName, ignoreCase = true)) {
-                    // Confirmed installed — refresh package cache + report success once.
-                    refreshPackageCache(pm, pkgName, targetVc, info, listener, completion)
-                }
-            }
-        }
-        // Match any installed package (matches intent-filter data scheme "package").
-        val filter = IntentFilter(Intent.ACTION_PACKAGE_ADDED)
-        filter.addDataScheme("package")
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ctx.registerReceiver(addedReceiver, filter, Context.RECEIVER_EXPORTED)
-            } else {
-                @Suppress("DEPRECATION")
-                ctx.registerReceiver(addedReceiver, filter)
-            }
-        } catch (_: Exception) {
-            // Polling below remains a fallback if receiver registration fails.
-        }
-
         val deadline = System.currentTimeMillis() + 90_000L
         while (System.currentTimeMillis() < deadline) {
-            // If PACKAGE_ADDED already delivered a result, stop polling.
             if (completion.get()) {
-                try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+                if (receiverRegistered) {
+                    try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+                }
                 return
             }
-            if (pkgName == null) {
-                // No package metadata — rely on the broadcast filter (matches any pkg).
-                Thread.sleep(2000)
-                continue
-            }
-            refreshPackageCache(pm, pkgName, targetVc, info, listener, completion)
-            if (completion.get()) {
-                try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
-                return
+            if (pkgName != null) {
+                refreshPackageCache(pm, pkgName, targetVc, info, listener, completion)
+                if (completion.get()) {
+                    if (receiverRegistered) {
+                        try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+                    }
+                    return
+                }
             }
             Thread.sleep(2000)
         }
-        // Timed out — unregister and do a final best-effort check before erroring.
-        try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+
+        if (receiverRegistered) {
+            try { ctx.unregisterReceiver(addedReceiver) } catch (_: Exception) {}
+        }
         if (completion.compareAndSet(false, true)) {
             listener.onDone(false, "${info.label}: install not confirmed in 90s. Check the device.")
         }
@@ -167,7 +183,7 @@ object Installer {
                 @Suppress("DEPRECATION")
                 pi.versionCode.toLong()
             }
-            if (targetVc == null || installed >= targetVc) {
+            if (targetVc != null && installed >= targetVc) {
                 if (completion.compareAndSet(false, true)) {
                     listener.onDone(true, "${info.label} installed (v${pi.versionName ?: installed})")
                 }
@@ -190,6 +206,7 @@ object Installer {
 
     // ── Full flow: download + install in a background thread ──────
     fun downloadAndInstall(ctx: Context, info: ApkInfo, listener: Listener) {
+        InstallerListenerHolder.beginInstall(listener)
         thread(name = "apk-download") {
             try {
                 val dir = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: ctx.filesDir

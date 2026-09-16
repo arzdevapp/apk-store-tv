@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var statusLine: TextView
     private lateinit var progressBar: ProgressBar
     private var items: MutableList<LibraryItem> = mutableListOf()
+    private val confirmedInstalls = mutableMapOf<String, Pair<Long?, String?>>()
     private var installing = false
 
     private data class LibraryItem(
@@ -155,7 +156,7 @@ class MainActivity : Activity() {
         progressBar.visibility = View.VISIBLE
         statusLine.text = "Preparing ${info.label}…"
 
-        InstallerListenerHolder.listener = object : Installer.Listener {
+        val installListener = object : Installer.Listener {
             override fun onProgress(fraction: Float, label: String) {
                 mainHandler.post {
                     progressBar.progress = (fraction * 1000).toInt()
@@ -173,20 +174,28 @@ class MainActivity : Activity() {
                     installing = false
                     statusLine.text = if (success) "✓ $message" else "$message"
                     if (success) {
-                        // Re-evaluate states shortly so the badge flips to OK/UPDATE.
+                        info.packageName?.let { pkg ->
+                            confirmedInstalls[pkg] = info.versionCode to info.versionName
+                            items.firstOrNull { it.info.packageName == pkg }?.let { item ->
+                                item.state = ItemState.CURRENT
+                                item.installedVersion = "installed ${info.versionName ?: info.versionCode ?: ""}"
+                            }
+                            adapter.notifyDataSetChanged()
+                        }
+                        // Reconcile with PackageManager after its vendor cache has time to catch up.
                         mainHandler.postDelayed({ refresh() }, 3000)
                     }
                 }
             }
         }
 
-        Installer.downloadAndInstall(this, info, InstallerListenerHolder.listener!!)
+        Installer.downloadAndInstall(this, info, installListener)
     }
 
     private fun refresh() {
         if (installing) return
         statusLine.text = "Loading library…"
-        InstallerListenerHolder.listener = null
+        InstallerListenerHolder.clearListener()
         mainHandler.post {
             thread(name = "appupdater-lib") {
                 try {
@@ -208,6 +217,14 @@ class MainActivity : Activity() {
                             } catch (_: PackageManager.NameNotFoundException) {
                                 installedVersion = null
                             }
+                        }
+                        val confirmed = info.packageName?.let { confirmedInstalls[it] }
+                        if (confirmed != null &&
+                            (installedVersion == null ||
+                                (confirmed.first != null && confirmed.first!! > installedVersion))
+                        ) {
+                            installedVersion = confirmed.first ?: info.versionCode ?: 0L
+                            installedVName = confirmed.second ?: info.versionName
                         }
                         val state = when {
                             installedVersion == null -> ItemState.INSTALL
@@ -329,9 +346,25 @@ class MainActivity : Activity() {
 // Holder for the install result listener — simple static bridge.
 object InstallerListenerHolder {
     @Volatile var listener: Installer.Listener? = null
-    // Set true once an install result has been delivered (broadcast OR poll), so the
-    // two completion paths never double-fire or contradict each other.
+        private set
+
+    // Reset exactly once when a new install starts. Result broadcasts and polling
+    // must share this same instance without resetting it mid-install.
     private val completion = java.util.concurrent.atomic.AtomicBoolean(false)
-    fun newCompletion(): java.util.concurrent.atomic.AtomicBoolean { completion.set(false); return completion }
-    fun markCompleted() { completion.set(true) }
+    @Volatile private var activeSessionId: Int = -1
+
+    fun beginInstall(newListener: Installer.Listener): java.util.concurrent.atomic.AtomicBoolean {
+        listener = newListener
+        activeSessionId = -1
+        completion.set(false)
+        return completion
+    }
+
+    fun setActiveSession(sessionId: Int) { activeSessionId = sessionId }
+    fun isActiveSession(sessionId: Int): Boolean = sessionId >= 0 && sessionId == activeSessionId
+    fun currentCompletion(): java.util.concurrent.atomic.AtomicBoolean = completion
+    fun clearListener() {
+        listener = null
+        activeSessionId = -1
+    }
 }
