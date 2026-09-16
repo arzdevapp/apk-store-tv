@@ -18,8 +18,23 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
 
+internal fun cleanupDownloadedApks(dirs: Iterable<File>, keep: File? = null): Int {
+    val kept = keep?.absoluteFile
+    return dirs.distinctBy { it.absolutePath }.sumOf { dir ->
+        dir.listFiles()?.count { file ->
+            file.isFile &&
+                file.name.startsWith("update_") &&
+                file.name.endsWith(".apk", ignoreCase = true) &&
+                file.absoluteFile != kept &&
+                file.delete()
+        } ?: 0
+    }
+}
+
 object Installer {
     private const val TAG = "AppUpdater"
+    private val cleanupLock = Any()
+    private val activeDownload = java.util.concurrent.atomic.AtomicReference<File?>(null)
 
     interface Listener {
         fun onProgress(fraction: Float, label: String)
@@ -205,14 +220,42 @@ object Installer {
     }
 
     // ── Full flow: download + install in a background thread ──────
+    fun cleanupCachedApks(ctx: Context): Int {
+        return synchronized(cleanupLock) {
+            cleanupDownloadedApks(
+                listOfNotNull(
+                    ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+                    ctx.filesDir
+                ),
+                activeDownload.get()
+            )
+        }
+    }
+
     fun downloadAndInstall(ctx: Context, info: ApkInfo, listener: Listener) {
+        val dirs = listOfNotNull(
+            ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+            ctx.filesDir
+        ).distinctBy { it.absolutePath }
+        val dir = dirs.first()
+        val safeName = info.filename.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val outFile = File(dir, "update_$safeName")
+        val accepted = synchronized(cleanupLock) {
+            if (!activeDownload.compareAndSet(null, outFile)) {
+                false
+            } else {
+                cleanupDownloadedApks(dirs, outFile)
+                true
+            }
+        }
+        if (!accepted) {
+            listener.onDone(false, "Another installation is already in progress")
+            return
+        }
+
         InstallerListenerHolder.beginInstall(listener)
         thread(name = "apk-download") {
             try {
-                val dir = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: ctx.filesDir
-                val safeName = info.filename.replace(Regex("[^A-Za-z0-9._-]"), "_")
-                val outFile = File(dir, "update_$safeName")
-
                 listener.onProgress(0f, "Starting download…")
                 downloadFile(info, listener, outFile)
                 listener.onProgress(0.9f, "Downloaded — installing…")
@@ -220,6 +263,11 @@ object Installer {
             } catch (e: Exception) {
                 Log.e(TAG, "downloadAndInstall error", e)
                 listener.onDone(false, "Error: ${e.message}")
+            } finally {
+                if (outFile.exists() && !outFile.delete()) {
+                    Log.w(TAG, "Could not delete temporary APK: ${outFile.name}")
+                }
+                activeDownload.compareAndSet(outFile, null)
             }
         }
     }
